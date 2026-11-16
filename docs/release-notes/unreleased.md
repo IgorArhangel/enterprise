@@ -393,6 +393,10 @@ Since [v2.0.0-preview.1](v2.0.0-preview.1.md).
 
 ## Fixes
 
+- **A number with a large exponent is turned into an integer at once.** Asked whether `1e999999` fits an integer,
+  the platform multiplied it out to a million digits first and only then said no, and `1e-999999` was divided by the
+  same power to say 0. A JSON request asks this of every number in it, before any login: `{"x":1e999999}`, fifteen
+  bytes, held the reader for 44 s of a Debug build. It is now told from the exponent.
 - **A template put into a document that names no language reads in your language.** `Put` and `Join` laid a
   template's captions down in the language written first for every user unless a script had set the document's
   `LanguageCode`; a document without one now takes the session's (#680). And an area taken from a template carries

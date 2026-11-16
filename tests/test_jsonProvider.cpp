@@ -461,6 +461,23 @@ TEST(JsonProvider, Nesting_AtTheLimit_FitsASmallThreadStack) {
 	EXPECT_TRUE(read);
 }
 
+// A number is read as the number its sender wrote, whatever its exponent, and a request is read before any login.
+// Reading one asks whether it fits sixty-four bits (ibDataValue::Number), and the answer was built out first: these
+// fifteen bytes held the reader for 44 s of a Debug build, a power of ten a million digits long.
+TEST(JsonProvider, ANumberWithTheLargestExponent_IsReadAsItIs) {
+	const ibDataNode node = Parse(Text("{\"big\":1e999999,\"small\":-7e-999999}"));
+
+	auto big = node.FindField(ibT("big"));
+	ASSERT_TRUE(big);
+	ASSERT_EQ(big->Kind(), ibDataKind::Number);
+	EXPECT_EQ(big->AsNumber().Compare(ibNumber(ibString(wxT("1e999999")))), 0);
+
+	auto small = node.FindField(ibT("small"));
+	ASSERT_TRUE(small);
+	ASSERT_EQ(small->Kind(), ibDataKind::Number);
+	EXPECT_EQ(small->AsNumber().Compare(ibNumber(ibString(wxT("-7e-999999")))), 0);
+}
+
 // =============================================================================
 // The name written beside a value's type: a courtesy for whoever reads the text, dropped on the way back - so a node
 // read and written again is the same node and the same text, round after round.

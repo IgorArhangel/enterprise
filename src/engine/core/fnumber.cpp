@@ -366,6 +366,42 @@ struct ibNumber::BigImpl
 		if (k > 0) MulMagSmall(limbs, kPow10[k]);
 	}
 
+	// ⭐⭐ THE INTEGER PART, TOWARD ZERO, IN PLACE — and false, without building it, when it needs more than
+	// `maxLimbs` limbs. Every conversion to an integer type starts here.
+	//
+	// 🛑 THE ANSWER "IT DOES NOT FIT" WAS BUILT BEFORE IT WAS GIVEN. Asked whether 1e999999 fits sixty-four bits,
+	// the conversion multiplied the mantissa out by 10^999999 — a million digits, quadratic in the exponent — and
+	// only then said no; 1e-999999 divided by the same power to say 0. A JSON request is parsed before any login,
+	// and every number in it is asked this (ibDataValue::Number, ToInt), so `{"x":1e999999}`, fifteen bytes and an
+	// exponent the parser accepts (kMaxDecodedExp10), held a thread for 44 s of a Debug build.
+	//
+	// The exponent alone answers both. 10^k is at least 2^(3k): past 32·maxLimbs bits a nonzero mantissa times
+	// 10^exp does not fit, and a divisor 10^-exp wider than the whole mantissa leaves an integer part of 0. What is
+	// still multiplied or divided out is bounded by the mantissa that arrived and by maxLimbs, not by the exponent.
+	bool TruncateToInteger(size_t maxLimbs)
+	{
+		if (exp > 0) {
+			if (!IsZeroMag(limbs) && static_cast<int64_t>(exp) * 3 >= static_cast<int64_t>(maxLimbs) * 32)
+				return false;
+			MulMagPow10(exp);
+		}
+		else if (exp < 0) {
+			if (-static_cast<int64_t>(exp) * 3 >= static_cast<int64_t>(limbs.size()) * 32) {
+				limbs.clear();
+			}
+			else {
+				BigImpl divisor; divisor.limbs.push_back(1u);
+				divisor.MulMagPow10(-exp);
+				std::vector<uint32_t> q, r;
+				DivModMag(limbs, divisor.limbs, q, r);
+				limbs = std::move(q);
+			}
+		}
+		exp = 0;
+		if (IsZeroMag(limbs)) negative = false;
+		return true;
+	}
+
 	// ---- conversions -------------------------------------------------------------
 
 	void FromInt64(int64_t v)
@@ -1037,22 +1073,8 @@ int64_t ibNumber::ToInt64() const
 
 	BigImpl b;
 	LoadBig(b);
-	if (b.exp > 0) {
-		b.MulMagPow10(b.exp);
-		b.exp = 0;
-	} else if (b.exp < 0) {
-		// Floor towards zero by integer-dividing magnitude by 10^|exp|.
-		std::vector<uint32_t> div = { 1u };
-		BigImpl divisor; divisor.limbs = div;
-		divisor.MulMagPow10(-b.exp);
-		std::vector<uint32_t> q, r;
-		BigImpl::DivModMag(b.limbs, divisor.limbs, q, r);
-		b.limbs = std::move(q);
-		if (b.IsZero()) b.negative = false;
-		b.exp = 0;
-	}
 	int64_t out;
-	if (!b.MagToInt64(out)) {
+	if (!b.TruncateToInteger(2) || !b.MagToInt64(out)) {
 		throw std::overflow_error("ibNumber::ToInt64 overflow");
 	}
 	return out;
@@ -1063,21 +1085,8 @@ int ibNumber::ToIntBig() const
 {
 	BigImpl b;
 	LoadBig(b);
-	// Truncate fractional part toward zero by dividing magnitude by 10^|exp|.
-	if (b.exp < 0) {
-		BigImpl divisor; divisor.limbs.push_back(1u);
-		divisor.MulMagPow10(-b.exp);
-		std::vector<uint32_t> q, r;
-		BigImpl::DivModMag(b.limbs, divisor.limbs, q, r);
-		b.limbs = std::move(q);
-		if (b.IsZero()) b.negative = false;
-		b.exp = 0;
-	} else if (b.exp > 0) {
-		b.MulMagPow10(b.exp);
-		b.exp = 0;
-	}
 	int64_t v;
-	if (!b.MagToInt64(v)) return b.negative ? INT_MIN : INT_MAX;
+	if (!b.TruncateToInteger(2) || !b.MagToInt64(v)) return b.negative ? INT_MIN : INT_MAX;
 	if (v >  static_cast<int64_t>(INT_MAX)) return INT_MAX;
 	if (v <  static_cast<int64_t>(INT_MIN)) return INT_MIN;
 	return static_cast<int>(v);
@@ -1089,20 +1098,8 @@ unsigned int ibNumber::ToUIntBig() const
 	BigImpl b;
 	LoadBig(b);
 	if (b.negative) return 0u;
-	if (b.exp < 0) {
-		BigImpl divisor; divisor.limbs.push_back(1u);
-		divisor.MulMagPow10(-b.exp);
-		std::vector<uint32_t> q, r;
-		BigImpl::DivModMag(b.limbs, divisor.limbs, q, r);
-		b.limbs = std::move(q);
-		if (b.IsZero()) b.negative = false;
-		b.exp = 0;
-	} else if (b.exp > 0) {
-		b.MulMagPow10(b.exp);
-		b.exp = 0;
-	}
 	int64_t v;
-	if (!b.MagToInt64(v)) return UINT_MAX;
+	if (!b.TruncateToInteger(2) || !b.MagToInt64(v)) return UINT_MAX;
 	if (v < 0) return 0u;
 	if (static_cast<uint64_t>(v) > static_cast<uint64_t>(UINT_MAX)) return UINT_MAX;
 	return static_cast<unsigned int>(v);
@@ -1117,19 +1114,7 @@ int ibNumber::ToSigned64(int64_t& out) const
 
 	BigImpl b;
 	LoadBig(b);
-	if (b.exp < 0) {
-		BigImpl divisor; divisor.limbs.push_back(1u);
-		divisor.MulMagPow10(-b.exp);
-		std::vector<uint32_t> q, r;
-		BigImpl::DivModMag(b.limbs, divisor.limbs, q, r);
-		b.limbs = std::move(q);
-		if (b.IsZero()) b.negative = false;
-		b.exp = 0;
-	} else if (b.exp > 0) {
-		b.MulMagPow10(b.exp);
-		b.exp = 0;
-	}
-	if (!b.MagToInt64(out)) return 1; // overflow (ttmath-compat semantics)
+	if (!b.TruncateToInteger(2) || !b.MagToInt64(out)) return 1; // overflow (ttmath-compat semantics)
 	return 0;
 }
 
@@ -1309,18 +1294,7 @@ int ibNumber::ToUnsigned64(uint64_t& out) const
 	BigImpl b;
 	LoadBig(b);
 	if (b.negative) return 1; // negative — overflow for unsigned
-	if (b.exp < 0) {
-		BigImpl divisor; divisor.limbs.push_back(1u);
-		divisor.MulMagPow10(-b.exp);
-		std::vector<uint32_t> q, r;
-		BigImpl::DivModMag(b.limbs, divisor.limbs, q, r);
-		b.limbs = std::move(q);
-		b.exp = 0;
-	} else if (b.exp > 0) {
-		b.MulMagPow10(b.exp);
-		b.exp = 0;
-	}
-	if (b.limbs.size() > 2) return 1;
+	if (!b.TruncateToInteger(2) || b.limbs.size() > 2) return 1;
 	uint64_t v = 0;
 	if (b.limbs.size() >= 1) v  = b.limbs[0];
 	if (b.limbs.size() >= 2) v |= static_cast<uint64_t>(b.limbs[1]) << 32;

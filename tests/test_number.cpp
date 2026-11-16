@@ -15,6 +15,7 @@
 
 #include <climits>
 #include <sstream>
+#include <stdexcept>   // std::overflow_error — what ToInt64 throws past sixty-four bits
 
 // ===========================================================================
 // Layout
@@ -486,6 +487,56 @@ TEST(NumberConv, ToInt64Out) {
     EXPECT_EQ(out, INT64_MAX);
 
     EXPECT_NE(ibNumber(ibString(wxT("99999999999999999999"))).ToInt(out), 0);
+}
+
+// ⚠ THE LARGEST EXPONENTS THE PARSER TAKES (kMaxDecodedExp10), BOTH WAYS. Every conversion to an integer built
+// 10^999999 out before it said "does not fit", or "0" for 1e-999999 - 44 s of a Debug build each, and a JSON
+// request asks it of every number it carries. Told from the exponent, they answer at once.
+TEST(NumberConv, ToInt_TheLargestExponent_OverflowsWithoutBuildingTheNumber) {
+    const ibNumber huge(ibString(wxT("1e999999")));
+    long long out = 7;
+    EXPECT_NE(huge.ToInt(out), 0);
+    unsigned long long uout = 7;
+    EXPECT_NE(huge.ToInt(uout), 0);
+    EXPECT_EQ(huge.ToInt(), INT_MAX);
+    EXPECT_EQ((-huge).ToInt(), INT_MIN);
+    EXPECT_EQ(huge.ToUInt(), UINT_MAX);
+    EXPECT_THROW(huge.ToInt64(), std::overflow_error);
+}
+
+TEST(NumberConv, ToInt_TheSmallestExponent_IsZeroWithoutBuildingTheNumber) {
+    const ibNumber tiny(ibString(wxT("-7e-999999")));
+    long long out = 7;
+    EXPECT_EQ(tiny.ToInt(out), 0);
+    EXPECT_EQ(out, 0);
+    EXPECT_EQ(tiny.ToInt(), 0);
+    EXPECT_EQ(tiny.ToInt64(), 0);
+
+    const ibNumber positive(ibString(wxT("7e-999999")));
+    unsigned long long uout = 7;
+    EXPECT_EQ(positive.ToInt(uout), 0);
+    EXPECT_EQ(uout, 0u);
+    EXPECT_EQ(positive.ToUInt(), 0u);
+}
+
+// Where the exponent alone decides, at its edges: the last powers of ten that fit are still built and read, the
+// first that cannot fit is refused, a zero stays zero, and a mantissa wider than the result is still divided.
+TEST(NumberConv, ToInt_AtTheEdgesOfSixtyFourBits) {
+    long long out = 0;
+    EXPECT_EQ(ibNumber(ibString(wxT("9e18"))).ToInt(out), 0);
+    EXPECT_EQ(out, 9000000000000000000LL);
+    EXPECT_NE(ibNumber(ibString(wxT("1e19"))).ToInt(out), 0);
+    EXPECT_NE(ibNumber(ibString(wxT("1e22"))).ToInt(out), 0);   // the first exponent refused without building it
+
+    unsigned long long uout = 0;
+    EXPECT_EQ(ibNumber(ibString(wxT("1e19"))).ToInt(uout), 0);
+    EXPECT_EQ(uout, 10000000000000000000ULL);
+    EXPECT_NE(ibNumber(ibString(wxT("2e19"))).ToInt(uout), 0);
+
+    EXPECT_EQ(ibNumber(ibString(wxT("0e999999"))).ToInt(out), 0);
+    EXPECT_EQ(out, 0);
+    EXPECT_EQ(ibNumber(ibString(wxT("12345678901234567890123e-5"))).ToInt(out), 0);
+    EXPECT_EQ(out, 123456789012345678LL);
 }
 
 TEST(NumberConv, ToDouble) {
